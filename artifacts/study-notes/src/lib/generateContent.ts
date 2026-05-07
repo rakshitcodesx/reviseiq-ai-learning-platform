@@ -1,12 +1,17 @@
 import type { Flashcard, QuizQuestion } from './types';
 
 const STOP_WORDS = new Set([
-  'the','a','an','is','are','was','were','be','been','have','has','had',
-  'do','does','did','will','would','could','should','may','might','in','on',
-  'at','to','for','of','with','by','from','this','that','these','those','it',
-  'its','they','them','their','we','you','he','she','and','but','or','not',
-  'also','just','only','very','such','each','every','all','some','any','than',
-  'then','when','where','which','who','what','how','if','as','while','because',
+  'the','a','an','is','are','was','were','be','been','being','have','has','had',
+  'do','does','did','will','would','could','should','may','might','can','shall',
+  'in','on','at','to','for','of','with','by','from','this','that','these','those',
+  'it','its','they','them','their','we','our','you','he','she','and','but','or',
+  'not','also','just','only','very','each','every','all','some','any','more','less',
+  'than','then','when','where','which','who','what','how','if','as','while',
+  'such','there','here','into','about','through','during','before','after',
+  'between','both','either','neither','nor','so','yet','because','since',
+  'one','two','three','four','five','six','seven','eight','nine','ten',
+  'use','used','using','make','made','take','taken','come','came','give','given',
+  'get','got','put','set','let','new','old','long','many','much','well',
 ]);
 
 function shuffle<T>(arr: T[]): T[] {
@@ -18,77 +23,279 @@ function shuffle<T>(arr: T[]): T[] {
   return out;
 }
 
-function getImportantWords(sentence: string, fullText: string): string[] {
-  const textWords = fullText.toLowerCase().split(/\s+/);
+// ─── Text Parsing ────────────────────────────────────────────────────────────
+
+/**
+ * Split continuous prose text into individual sentences.
+ * Avoids splitting on abbreviations and decimals by requiring uppercase after punctuation.
+ */
+function splitSentences(text: string): string[] {
+  const result: string[] = [];
+  // Split at sentence-ending punctuation followed by whitespace + capital letter
+  const parts = text.split(/(?<=[.!?])\s+(?=[A-Z])/);
+  for (const p of parts) {
+    const s = p.trim();
+    // Must contain real word content (not just numbers/symbols)
+    if (s.length >= 15 && /[a-zA-Z]{3,}/.test(s)) result.push(s);
+  }
+  return result;
+}
+
+/**
+ * Parse raw text into clean string segments, correctly handling:
+ *   - Numbered lists:   1. item  /  1) item  /  (1) item
+ *   - Lettered lists:   a. item  /  (a) item
+ *   - Bullet points:    •  -  *  –  —  ►  →  ✓  ✗
+ *   - Regular paragraphs (joined across wrapped lines, then sentence-split)
+ */
+export function parseSegments(raw: string): string[] {
+  const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const segments: string[] = [];
+  let paraBuffer: string[] = [];
+
+  const flushPara = () => {
+    if (!paraBuffer.length) return;
+    const para = paraBuffer.join(' ').trim();
+    paraBuffer = [];
+    segments.push(...splitSentences(para));
+  };
+
+  for (const line of lines) {
+    const t = line.trim();
+
+    // Blank line → flush paragraph buffer
+    if (!t) { flushPara(); continue; }
+
+    // Numbered list: "1. text", "1) text", "(1) text", "12. text"
+    const numMatch = t.match(/^\s*(?:\(?\d{1,3}[.)]\s*)(.+)/);
+    if (numMatch) {
+      const item = numMatch[1].trim();
+      if (item.length >= 2 && /[a-zA-Z]/.test(item)) {
+        flushPara();
+        segments.push(item);
+        continue;
+      }
+    }
+
+    // Lettered list: "a. text", "A. text", "(a) text"
+    const letterMatch = t.match(/^\s*(?:\(?[a-zA-Z][.)]\s*)(.+)/);
+    if (letterMatch && letterMatch[1].length > 3) {
+      const item = letterMatch[1].trim();
+      if (/[a-zA-Z]{2,}/.test(item)) {
+        flushPara();
+        segments.push(item);
+        continue;
+      }
+    }
+
+    // Bullet points: •  -  *  –  —  ►  ▸  →  ✓  ✗
+    const bulletMatch = t.match(/^\s*[•\-\*–—►▸→✓✗]\s+(.+)/);
+    if (bulletMatch) {
+      const item = bulletMatch[1].trim();
+      if (item.length >= 2 && /[a-zA-Z]/.test(item)) {
+        flushPara();
+        segments.push(item);
+        continue;
+      }
+    }
+
+    // Regular line → accumulate into paragraph buffer
+    paraBuffer.push(t);
+  }
+
+  flushPara();
+  return segments;
+}
+
+// ─── Deduplication ───────────────────────────────────────────────────────────
+
+function contentWords(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase()
+      .replace(/[^a-z\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 4 && !STOP_WORDS.has(w))
+  );
+}
+
+function jaccardSim(a: string, b: string): number {
+  const wa = contentWords(a);
+  const wb = contentWords(b);
+  if (!wa.size || !wb.size) return 0;
+  let shared = 0;
+  wa.forEach(w => { if (wb.has(w)) shared++; });
+  return shared / (wa.size + wb.size - shared);
+}
+
+function deduplicate(items: string[], threshold = 0.52): string[] {
+  const kept: string[] = [];
+  for (const item of items) {
+    if (!kept.some(k => jaccardSim(k, item) >= threshold)) {
+      kept.push(item);
+    }
+  }
+  return kept;
+}
+
+// ─── Scoring ─────────────────────────────────────────────────────────────────
+
+function scoreSegment(seg: string, topKw: Set<string>): number {
+  const words = seg.toLowerCase().split(/\s+/);
+  const kwHits = words.filter(w => topKw.has(w)).length;
+  const wc = words.length;
+  // Prefer medium-length segments with high keyword density
+  const lengthBonus = wc >= 3 && wc <= 40 ? 1 : wc < 3 ? 0.3 : 0.6;
+  const density = kwHits / Math.max(1, wc);
+  return density * 4 + lengthBonus * 0.5;
+}
+
+// ─── Main: extractNotes ──────────────────────────────────────────────────────
+
+export function extractNotes(raw: string): string[] {
+  const segments = parseSegments(raw);
+
+  // Filter: must have meaningful letter content and at least 2 words
+  const valid = segments.filter(s => {
+    const letters = (s.match(/[a-zA-Z]/g) || []).length;
+    const words = s.trim().split(/\s+/).length;
+    return letters >= 5 && words >= 2;
+  });
+
+  if (valid.length === 0) return [];
+
+  // Build top-keyword set for scoring
+  const wordFreq: Record<string, number> = {};
+  for (const seg of valid) {
+    for (const w of contentWords(seg)) {
+      wordFreq[w] = (wordFreq[w] || 0) + 1;
+    }
+  }
+  const topKw = new Set(
+    Object.entries(wordFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 40)
+      .map(([w]) => w)
+  );
+
+  // Deduplicate, then score
+  const deduped = deduplicate(valid);
+  const scored = deduped
+    .map(s => ({ s, score: scoreSegment(s, topKw) }))
+    .sort((a, b) => b.score - a.score);
+
+  // Return up to 6 notes (balances content richness with UI speed)
+  const limit = Math.min(6, Math.max(3, scored.length));
+  return scored.slice(0, limit).map(x => x.s);
+}
+
+// ─── Important Words ─────────────────────────────────────────────────────────
+
+function getImportantWords(sentence: string, allText: string): string[] {
+  const textFreq: Record<string, number> = {};
+  for (const w of allText.toLowerCase().split(/\s+/)) {
+    const clean = w.replace(/[^a-z]/g, '');
+    if (clean.length >= 4) textFreq[clean] = (textFreq[clean] || 0) + 1;
+  }
+  const totalWords = Object.values(textFreq).reduce((s, n) => s + n, 0) || 1;
+
   return sentence
     .split(/\s+/)
-    .map(w => w.replace(/[^a-zA-Z]/g, ''))
+    .map(w => w.replace(/[^a-zA-Z'-]/g, '').replace(/^'+|'+$/g, ''))
     .filter(w => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()))
     .sort((a, b) => {
-      const freqA = textWords.filter(w => w === a.toLowerCase()).length;
-      const freqB = textWords.filter(w => w === b.toLowerCase()).length;
-      return (freqB * b.length) - (freqA * a.length);
+      const fa = textFreq[a.toLowerCase()] || 0;
+      const fb = textFreq[b.toLowerCase()] || 0;
+      // Higher score = less common (more unique) + longer word
+      const scoreA = b.length * Math.log(totalWords / (fa + 1));
+      const scoreB = a.length * Math.log(totalWords / (fb + 1));
+      return scoreA - scoreB;
     });
 }
 
-export function extractNotes(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 10)
-    .slice(0, 3);
-}
+// ─── generateFlashcards ──────────────────────────────────────────────────────
+
+const CONCEPT_QUESTIONS = [
+  (kp: string) => `What is meant by "${kp}"?`,
+  (kp: string) => `How would you describe "${kp}"?`,
+  (kp: string) => `What does "${kp}" refer to in this context?`,
+  (kp: string) => `Explain the significance of "${kp}"`,
+];
 
 export function generateFlashcards(notes: string[]): Flashcard[] {
-  const questionStarters = [
-    'What is described by',
-    'How would you explain',
-    'What does the text say about',
-  ];
-
+  const allText = notes.join(' ');
   return notes.map((note, i) => {
-    const words = note.split(/\s+/);
-    const keyPhrase = words.slice(0, Math.min(5, Math.ceil(words.length * 0.35))).join(' ');
-    const front = `${questionStarters[i % questionStarters.length]}: "${keyPhrase}..."?`;
-    return { front, back: note };
+    const words = note.trim().split(/\s+/);
+    const important = getImportantWords(note, allText);
+
+    // For sentences of 6+ words: try fill-in-the-blank
+    if (words.length >= 6 && important.length > 0) {
+      for (const key of important.slice(0, 3)) {
+        const blanked = note.replace(new RegExp(`\\b${key}\\b`, 'i'), '______');
+        if (blanked !== note) {
+          return {
+            front: `Fill in the blank:\n"${blanked}"`,
+            back: key,
+          };
+        }
+      }
+    }
+
+    // Short items or fallback: concept recall question
+    const keyPhrase = words.slice(0, Math.min(6, words.length)).join(' ');
+    const template = CONCEPT_QUESTIONS[i % CONCEPT_QUESTIONS.length];
+    return {
+      front: template(keyPhrase),
+      back: note,
+    };
   });
 }
 
+// ─── generateQuiz ────────────────────────────────────────────────────────────
+
 export function generateQuiz(notes: string[], fullText: string): QuizQuestion[] {
-  return notes.map(note => {
+  return notes.map((note, i) => {
     const important = getImportantWords(note, fullText);
 
-    if (important.length === 0) {
-      const otherNotes = notes.filter(n => n !== note);
-      return {
-        question: 'Which of the following is stated in the notes?',
-        options: shuffle([note, ...otherNotes].slice(0, 4)),
-        answer: note,
-      };
+    // Type A: fill-in-the-blank
+    if (important.length > 0) {
+      for (const answerWord of important.slice(0, 3)) {
+        const questionText = note.replace(new RegExp(`\\b${answerWord}\\b`, 'i'), '______');
+        if (questionText === note) continue;
+
+        // Build distractors from other notes' important words
+        const distractors = notes
+          .filter((_, j) => j !== i)
+          .flatMap(n => getImportantWords(n, fullText))
+          .reduce<string[]>((acc, w) => {
+            if (w.toLowerCase() !== answerWord.toLowerCase() &&
+                !acc.some(a => a.toLowerCase() === w.toLowerCase())) {
+              acc.push(w);
+            }
+            return acc;
+          }, [])
+          .slice(0, 3);
+
+        const fillers = ['Framework', 'Mechanism', 'Integration', 'Synthesis', 'Outcome', 'Analysis'];
+        while (distractors.length < 3) {
+          distractors.push(fillers[(i + distractors.length) % fillers.length]);
+        }
+
+        return {
+          question: questionText,
+          options: shuffle([answerWord, ...distractors.slice(0, 3)]),
+          answer: answerWord,
+        };
+      }
     }
 
-    const answerWord = important[0];
-
-    const distractors: string[] = notes
-      .filter(n => n !== note)
-      .flatMap(n => getImportantWords(n, fullText))
-      .filter(w => w.toLowerCase() !== answerWord.toLowerCase())
-      .slice(0, 3);
-
-    const fillers = ['Element', 'Process', 'System', 'Structure', 'Function', 'Method'];
-    while (distractors.length < 3) {
-      distractors.push(fillers[distractors.length % fillers.length]);
-    }
-
-    const questionText = note.replace(
-      new RegExp(`\\b${answerWord}\\b`, 'i'),
-      '______'
-    );
+    // Type B: identify correct statement (uses full notes as options)
+    const others = shuffle(notes.filter((_, j) => j !== i)).slice(0, 3);
+    while (others.length < 3) others.push('None of the above apply here');
 
     return {
-      question: questionText,
-      options: shuffle([answerWord, ...distractors.slice(0, 3)]),
-      answer: answerWord,
+      question: 'Which of the following is stated in the material?',
+      options: shuffle([note, ...others].slice(0, 4)),
+      answer: note,
     };
   });
 }
