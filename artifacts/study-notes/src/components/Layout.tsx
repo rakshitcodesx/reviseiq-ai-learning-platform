@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Menu, BookOpen, Sun, Moon } from "lucide-react";
+import { Menu, Sun, Moon, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Sidebar from "./Sidebar";
 
@@ -19,7 +19,7 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-[100dvh] flex bg-background text-foreground transition-colors duration-300 font-sans">
-      {/* Desktop Sidebar — always visible on lg+ */}
+      {/* Desktop Sidebar */}
       <div className="hidden lg:block flex-shrink-0 h-screen sticky top-0">
         <Sidebar isDark={isDark} onToggleDark={() => setIsDark(d => !d)} />
       </div>
@@ -55,7 +55,7 @@ export default function Layout({ children }: LayoutProps) {
         )}
       </AnimatePresence>
 
-      {/* Main content area */}
+      {/* Main area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-x-hidden">
         {/* Mobile top bar */}
         <header className="lg:hidden sticky top-0 z-30 flex items-center justify-between px-4 h-14 bg-background/90 backdrop-blur-sm border-b border-border">
@@ -66,10 +66,14 @@ export default function Layout({ children }: LayoutProps) {
           >
             <Menu className="w-5 h-5" />
           </button>
+
           <div className="flex items-center gap-2">
-            <BookOpen className="w-5 h-5 text-primary" />
-            <span className="font-bold text-sm">StudyAI</span>
+            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+              <Zap className="w-3 h-3 text-white" fill="white" strokeWidth={0} />
+            </div>
+            <span className="font-bold text-sm tracking-tight">ReviseIQ</span>
           </div>
+
           <button
             onClick={() => setIsDark(d => !d)}
             className="p-2 rounded-xl hover:bg-muted transition-colors"

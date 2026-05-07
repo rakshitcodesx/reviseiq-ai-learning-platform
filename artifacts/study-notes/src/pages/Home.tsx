@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   BookOpen, Sparkles, RotateCcw, AlertCircle, Copy, Check,
   Download, Upload, FileText, Clock, Brain, Hash,
-  ChevronRight, Layers,
+  ChevronRight, Layers, FileDown, Loader2,
 } from "lucide-react";
+import { exportStudySheet } from "@/lib/exportPDF";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -55,6 +56,7 @@ export default function Home() {
   const [session, setSession] = useState<StudySession | null>(() => getCurrentSession());
   const [typingKey, setTypingKey] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [pdfName, setPdfName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +141,18 @@ export default function Home() {
     }, 900);
   };
 
+  const handleExport = useCallback(async () => {
+    if (!session) return;
+    setIsExporting(true);
+    try {
+      await exportStudySheet(session);
+    } catch (err) {
+      console.error("PDF export failed", err);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [session]);
+
   const handleClear = () => {
     setText("");
     setSession(null);
@@ -170,7 +184,7 @@ export default function Home() {
       {/* Page header */}
       <div className="space-y-1">
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">Upload or paste study material to generate notes, flashcards, and a quiz.</p>
+        <p className="text-muted-foreground text-sm">Upload or paste study material — ReviseIQ turns it into notes, flashcards, and a quiz.</p>
       </div>
 
       {/* Input card */}
@@ -407,40 +421,69 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Quick links to Flashcards / Quiz after generation */}
+      {/* Quick links + Export after generation */}
       <AnimatePresence>
         {session && session.notes.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+            className="space-y-3"
           >
-            <Link
-              href="/flashcards"
-              className="flex items-center gap-4 p-4 bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-sm transition-all group cursor-pointer"
+            {/* Quick nav cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Link
+                href="/flashcards"
+                className="flex items-center gap-4 p-4 bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-sm transition-all group cursor-pointer"
+              >
+                <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+                  <Layers className="w-5 h-5 text-indigo-500" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold">Flashcards</p>
+                  <p className="text-xs text-muted-foreground">{session.flashcards.length} cards ready</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
+              </Link>
+              <Link
+                href="/quiz"
+                className="flex items-center gap-4 p-4 bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-sm transition-all group cursor-pointer"
+              >
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+                  <Brain className="w-5 h-5 text-amber-500" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold">Quiz Me</p>
+                  <p className="text-xs text-muted-foreground">{session.quizQuestions.length} questions ready</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
+              </Link>
+            </div>
+
+            {/* Export Study Sheet */}
+            <button
+              onClick={handleExport}
+              disabled={isExporting}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 transition-all disabled:opacity-70 disabled:cursor-not-allowed group"
             >
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
-                <Layers className="w-5 h-5 text-indigo-500" />
+              <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center flex-shrink-0">
+                {isExporting ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <FileDown className="w-5 h-5" />
+                )}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Flashcards</p>
-                <p className="text-xs text-muted-foreground">{session.flashcards.length} cards ready</p>
+              <div className="flex-1 min-w-0 text-left">
+                <p className="text-sm font-semibold leading-none">
+                  {isExporting ? "Generating PDF…" : "Export Study Sheet"}
+                </p>
+                <p className="text-xs text-white/70 mt-1">
+                  Notes · Keywords · Flashcards · Quiz · Analytics
+                </p>
               </div>
-              <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
-            </Link>
-            <Link
-              href="/quiz"
-              className="flex items-center gap-4 p-4 bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-sm transition-all group cursor-pointer"
-            >
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center flex-shrink-0">
-                <Brain className="w-5 h-5 text-amber-500" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Quiz Me</p>
-                <p className="text-xs text-muted-foreground">{session.quizQuestions.length} questions ready</p>
-              </div>
-              <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
-            </Link>
+              {!isExporting && (
+                <ChevronRight className="w-4 h-4 text-white/60 group-hover:text-white group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+              )}
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
