@@ -31,22 +31,74 @@ function shuffle<T>(arr: T[]): T[] {
  */
 function splitSentences(text: string): string[] {
   const result: string[] = [];
-  // Split at sentence-ending punctuation followed by whitespace + capital letter
   const parts = text.split(/(?<=[.!?])\s+(?=[A-Z])/);
   for (const p of parts) {
     const s = p.trim();
-    // Must contain real word content (not just numbers/symbols)
     if (s.length >= 15 && /[a-zA-Z]{3,}/.test(s)) result.push(s);
   }
   return result;
 }
 
 /**
+ * Generic heading labels that carry no useful content as a note.
+ * Used to skip trivial section titles while still using them as boundaries.
+ */
+const GENERIC_HEADINGS = new Set([
+  'introduction', 'conclusion', 'summary', 'overview', 'abstract',
+  'references', 'bibliography', 'appendix', 'contents', 'preface',
+  'foreword', 'acknowledgements', 'glossary', 'index', 'background',
+  'discussion', 'results', 'methods', 'methodology', 'notes',
+]);
+
+/**
+ * Detect section headings using text-pattern heuristics.
+ * Matches: ALL CAPS, Title Case short lines, year-prefixed titles,
+ * chapter/section markers — all without a sentence-ending period.
+ */
+function isHeadingLine(text: string): boolean {
+  const t = text.trim();
+  const words = t.split(/\s+/);
+
+  // Length guard: headings are short
+  if (words.length > 10 || t.length > 120) return false;
+  // Must open with uppercase or digit
+  if (!/^[A-Z\d"']/.test(t)) return false;
+  // Prose sentence: ends with period/!/? after a lowercase letter → not a heading
+  if (/[a-z][.!?]$/.test(t)) return false;
+
+  // ALL CAPS (≥ 2 words): "KEY APPLICATIONS OF AI"
+  if (words.length >= 2 && /^[A-Z][A-Z0-9\s:,&'"\-]*$/.test(t)) return true;
+
+  // Year-prefixed: "2026 Trends", "2024 AI Report"
+  if (/^\d{4}\s+[A-Z]/.test(t) && words.length <= 6) return true;
+
+  // Explicit section markers: "Chapter 3", "Section 1.2"
+  if (/^(chapter|section|part|unit)\s+[\d\w]+/i.test(t)) return true;
+
+  // Title Case: ≥ 70 % of content words are capitalised, ≤ 8 words total
+  const meaningful = words.filter(
+    w => w.length > 3 &&
+      !/^(and|the|of|in|on|at|for|with|to|a|an|or|but|nor|from|by|as)$/i.test(w),
+  );
+  const capped = meaningful.filter(w => /^[A-Z]/.test(w));
+  if (
+    meaningful.length >= 2 &&
+    capped.length >= Math.ceil(meaningful.length * 0.7) &&
+    words.length <= 8
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Parse raw text into clean string segments, correctly handling:
- *   - Numbered lists:   1. item  /  1) item  /  (1) item
- *   - Lettered lists:   a. item  /  (a) item
- *   - Bullet points:    •  -  *  –  —  ►  →  ✓  ✗
- *   - Regular paragraphs (joined across wrapped lines, then sentence-split)
+ *   - Section headings  → used as section boundaries; included if substantive
+ *   - Numbered lists    → 1. item  /  1) item  /  (1) item
+ *   - Lettered lists    → a. item  /  (a) item
+ *   - Bullet points     → •  -  *  –  —  ►  →  ✓  ✗
+ *   - Regular paragraphs (wrapped lines joined, then sentence-split)
  */
 export function parseSegments(raw: string): string[] {
   const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
@@ -63,10 +115,22 @@ export function parseSegments(raw: string): string[] {
   for (const line of lines) {
     const t = line.trim();
 
-    // Blank line → flush paragraph buffer
+    // Blank line → flush paragraph buffer (section or paragraph break)
     if (!t) { flushPara(); continue; }
 
-    // Numbered list: "1. text", "1) text", "(1) text", "12. text"
+    // ── Section heading → hard section boundary ──────────────────────────────
+    if (isHeadingLine(t)) {
+      flushPara();
+      // Include as a segment only when it carries substantive content
+      // (3+ words and not a generic label like "Conclusion" or "References")
+      const words = t.split(/\s+/);
+      if (words.length >= 3 && !GENERIC_HEADINGS.has(t.toLowerCase())) {
+        segments.push(t);
+      }
+      continue;
+    }
+
+    // ── Numbered list: "1. text", "1) text", "(1) text", "12. text" ──────────
     const numMatch = t.match(/^\s*(?:\(?\d{1,3}[.)]\s*)(.+)/);
     if (numMatch) {
       const item = numMatch[1].trim();
@@ -77,7 +141,7 @@ export function parseSegments(raw: string): string[] {
       }
     }
 
-    // Lettered list: "a. text", "A. text", "(a) text"
+    // ── Lettered list: "a. text", "A. text", "(a) text" ──────────────────────
     const letterMatch = t.match(/^\s*(?:\(?[a-zA-Z][.)]\s*)(.+)/);
     if (letterMatch && letterMatch[1].length > 3) {
       const item = letterMatch[1].trim();
@@ -88,7 +152,7 @@ export function parseSegments(raw: string): string[] {
       }
     }
 
-    // Bullet points: •  -  *  –  —  ►  ▸  →  ✓  ✗
+    // ── Bullet points: •  -  *  –  —  ►  ▸  →  ✓  ✗ ─────────────────────────
     const bulletMatch = t.match(/^\s*[•\-\*–—►▸→✓✗]\s+(.+)/);
     if (bulletMatch) {
       const item = bulletMatch[1].trim();
@@ -99,7 +163,7 @@ export function parseSegments(raw: string): string[] {
       }
     }
 
-    // Regular line → accumulate into paragraph buffer
+    // ── Regular prose line → accumulate into paragraph buffer ─────────────────
     paraBuffer.push(t);
   }
 
